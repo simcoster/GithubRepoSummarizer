@@ -69,7 +69,7 @@ class GitHubClient:
                     ),
                 )
             )
-        return files, tree
+        return files
 
     async def get_file_commit_info(
         self, owner: str, repo: str, branch: str, path: str

@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException
 load_dotenv()
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def _get_llm_client() -> LLMClient:
     base_url = os.environ.get(
         "NEBIUS_API_BASE", "https://api.tokenfactory.nebius.com/v1/"
     )
-    model = os.environ.get("NEBIUS_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct")
+    model = os.environ.get("NEBIUS_MODEL", "Qwen/Qwen3-235B-A22B-Instruct-2507")
     return LLMClient(api_key=api_key, base_url=base_url, model=model)
 
 
@@ -62,7 +62,8 @@ async def summarize(request: SummarizeRequest):
         branch = await github.get_default_branch(owner, repo)
         logger.info("Default branch: %s", branch)
 
-        files, tree = await github.get_repo_tree(owner, repo, branch)
+        #TODO no longer returns files, should adjust the code (files is better, but need to adjust the code to use it)
+        files = await github.get_repo_tree(owner, repo, branch)
         if not files:
             return JSONResponse(
                 status_code=400,
@@ -95,7 +96,7 @@ async def summarize(request: SummarizeRequest):
 
     llm = _get_llm_client()
     try:
-        result = await llm.summarize(owner, repo, context, tree)
+        result = await llm.summarize(owner, repo, context)
         logger.info("Summary generated successfully")
         return result
     except LLMError as e:

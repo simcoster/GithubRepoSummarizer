@@ -8,32 +8,49 @@ from app.models import SummarizeResponse
 logger = logging.getLogger(__name__)
 
 NEBIUS_API_BASE = "https://api.studio.nebius.com/v1/"
-MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+MODEL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 SYSTEM_PROMPT = """\
-You are a software project analyst. Given the contents of a GitHub repository—where each content section is marked and sorted by an edit timestamp—produce a structured JSON analysis with exactly three fields:
+You are a software project analyst. You will receive:
+- the repository tree structure (or a compact summary for large repos)
+- contents of key files selected from the repository
 
-If there is contradictory information in the repository contents, always prefer and use the information from the newer timestamp.
+IMPORTANT: Do not invent or assume file paths, technologies, or patterns not present in the provided files.
 
-1. "summary": A clear, human-readable description (2-4 sentences) of what the project does, its purpose, and who it's for. Be specific and informative.
+Your task is to analyze this and return a JSON object with exactly three fields:
 
-2. "technologies": A JSON array of strings listing the main programming languages, frameworks, libraries, and tools the project uses. Include only significant dependencies, not every transitive package. Order by importance.
+1. "summary": 2-3 sentences describing what the project does, its purpose, and who it's for.
+   - Be specific. Avoid vague phrases like "a tool for managing..." or "a library that helps...".
+   - If the project is well-known, go BEYOND the README — describe real-world impact, use cases, or how it works at a high level.
+   - Do NOT just restate the README opening line. The summary should add insight, not repeat what's already written.
+   - Do not repeat the project name more than once.
 
-3. "structure": A brief description (2-3 sentences) of how the project is organized. Focus on the purpose and relationships between major parts, not just directory names. 
-For example: where the core logic lives, where tests are, how the project is built, 
-and any notable architectural patterns (e.g. plugin system, monorepo, library + CLI, etc.).
+2. "technologies": array of strings — programming languages, frameworks, libraries, and build tools used.
+   - Order by significance (primary language first).
+   - ONLY include technologies explicitly present in the provided files (dependency files, imports, config files). Do not infer or guess.
+   - ONLY include external languages, frameworks, and tools — not subprojects or components of this repo itself.
+   - Deduplicate carefully.
+   - Exclude transitive/minor dependencies.
+   - Maximum 10 items.
+   - Do not deduce build tools from project structure patterns — only list them if explicitly specified in the provided config files.
+   - An empty dependency group (e.g. `security = []`) means NO dependencies — do not infer what might belong there.
 
-Respond ONLY with valid JSON. No markdown, no code fences, no extra text.
+3. "structure": 2-3 sentences on how the project is organized.
+   - Base your answer ONLY on the actual files and directories provided. Do NOT invent file paths.
+   - Explain the PURPOSE of key directories, not just their names.
+   - Focus on code organization: where core logic lives, how it's divided, where tests are.
+   - Do NOT mention build tools or technologies here — those belong in the technologies field.
+   - If you can identify an architectural pattern (plugin system, monorepo, library+CLI, etc.), name it — but only if you see clear evidence of it in the provided files.
+   - Example of BAD structure: "The project has src/, tests/, and docs/ directories."
+   - Example of GOOD structure: "Core logic lives in src/core/. Tests mirror the source layout in tests/. The public API is exposed through a single entry point."
+
+Respond ONLY with valid JSON. No markdown, no code fences, no explanation outside the JSON.
 """
 
 USER_PROMPT_TEMPLATE = """\
-Analyze the following GitHub repository and produce a JSON summary.
-
 Repository: {owner}/{repo}
 
 {context}
-
-Respond with a JSON object containing "summary", "technologies", and "structure" fields.\
 """
 
 
@@ -47,42 +64,61 @@ class LLMClient:
         self._model = model
 
     async def summarize(
-        self, owner: str, repo: str, context: str, tree: list[dict]
+        self, owner: str, repo: str, context: str
     ) -> SummarizeResponse:
         user_prompt = USER_PROMPT_TEMPLATE.format(
-            owner=owner, repo=repo, context=context, tree=json.dumps(tree)
+            owner=owner, repo=repo, context=context
         )
+        max_json_retries = 3
+        for attempt in range(1, max_json_retries + 1):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    extra_body={"thinking": {"type": "disabled"}},
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=800,
+                    response_format={"type": "json_object"},
+                )
+                usage = getattr(response, "usage", None)
+                if usage and hasattr(usage, "total_tokens"):
+                    print(f"[LLMClient] Tokens used: {usage.total_tokens}")
+                    print(f"[LLMClient] Prompt tokens: {usage.prompt_tokens}")
+                    print(f"[LLMClient] Completion tokens: {usage.completion_tokens}")
+                    print("--------------------------------")
+            except Exception as e:
+                logger.error("LLM API call failed: %s", e)
+                raise LLMError(f"LLM API call failed: {e}") from e
 
-        try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-            )
-        except Exception as e:
-            logger.error("LLM API call failed: %s", e)
-            raise LLMError(f"LLM API call failed: {e}") from e
+            raw = response.choices[0].message.content
+            logger.error(f"model: {self._model}, LLM response: {raw}")
+            try:
+                if not raw:
+                    raise ValueError("LLM returned an empty response")
+                data = json.loads(raw)
+                print(f"model: {self._model}, response: {data}")
+                return SummarizeResponse(
+                    summary=data.get("summary", ""),
+                    technologies=list(set(data.get("technologies", []))),
+                    structure=data.get("structure", ""),
+                )
+            except Exception as e:
+                if attempt == max_json_retries:
+                    logger.error(
+                        "Failed to parse/validate LLM response on final attempt: %s",
+                        str(e),
+                    )
+                    raise LLMError(
+                        f"LLM response parse/validation failed after {max_json_retries} attempts: {e}"
+                    ) from e
+                logger.warning(
+                    "Failed to parse/validate LLM response on attempt %s/%s. Retrying.",
+                    attempt,
+                    max_json_retries,
+                )
+                continue
 
-        raw = response.choices[0].message.content
-        if not raw:
-            raise LLMError("LLM returned an empty response")
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse LLM response as JSON: %s", raw[:500])
-            raise LLMError("LLM returned invalid JSON") from e
-
-        try:
-            return SummarizeResponse(
-                summary=data.get("summary", ""),
-                technologies=data.get("technologies", []),
-                structure=data.get("structure", ""),
-            )
-        except Exception as e:
-            raise LLMError(f"LLM response did not match expected schema: {e}") from e
+        raise LLMError("LLM returned invalid JSON")

@@ -127,7 +127,7 @@ def _score_file(file: RepoFile) -> int:
     # Entry-point heuristics
     entry_names = {"main", "app", "index", "server", "cli", "__main__", "mod"}
     stem = PurePosixPath(name).stem.lower()
-    if stem in entry_names:
+    if stem in entry_names:\
         score += 300
 
     return score
@@ -157,7 +157,7 @@ def _build_tree_full(
     dirs: set[str], file_paths: list[str], max_lines: int
 ) -> list[str]:
     """Render a full indented directory tree (used when dirs <= 100)."""
-    all_entries = sorted(dirs) + sorted(file_paths)
+    all_entries = sorted(list(dirs) + file_paths)
     lines = []
     for entry in all_entries:
         depth = entry.count("/")
@@ -201,7 +201,19 @@ def _build_tree_summary(file_paths: list[str], max_lines: int) -> list[str]:
             type_str = ", ".join(f"{typ}: {cnt}" for typ, cnt in type_counts.most_common())
             lines.append(f"  ... ({len(remaining)} more: {type_str})")
 
-    for d in sorted(top_level_dirs):
+    sorted_top_level_dirs = sorted(top_level_dirs)
+    if sorted_top_level_dirs:
+        lines.append("")
+        lines.append("Top-level directories:")
+        for d in sorted_top_level_dirs[:30]:
+            lines.append(f"  {d}/")
+        if len(sorted_top_level_dirs) > 30:
+            lines.append(f"  ... ({len(sorted_top_level_dirs) - 30} more)")
+        if len(lines) > max_lines:
+            lines.append("  ... (output truncated)")
+            return lines
+
+    for d in sorted_top_level_dirs:
         file_types: Counter = Counter()
         subdirs: set[str] = set()
         for fpath in file_paths:
@@ -292,12 +304,8 @@ async def collect_repo_context(
         if f.content is None:
             continue
         content = truncate_content(f.content)
-        last_commit = f.last_commit_timestamp or "unknown"
-        commit_count = f.commit_count if f.commit_count is not None else "unknown"
         section = (
             f"## File: {f.path}\n"
-            f"Last commit timestamp: {last_commit}\n"
-            f"Commit count: {commit_count}\n"
             f"```\n{content}\n```\n"
         )
 

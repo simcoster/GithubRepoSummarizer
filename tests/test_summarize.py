@@ -34,17 +34,17 @@ class TestSummarizeEndpoint:
 
         assert isinstance(data["summary"], str)
         assert len(data["summary"]) > 10
-        print(data["summary"])
+        print(f"summary: {data['summary']}")
 
         assert isinstance(data["technologies"], list)
         assert len(data["technologies"]) > 0
-        print(data["technologies"])
+        print(f"technologies: {data['technologies']}")
 
         assert isinstance(data["structure"], str)
         assert len(data["structure"]) > 10
-        print(data["structure"])
+        print(f"structure: {data['structure']}")
 
-    def test_big_repo_returns_valid_summary(self, client):
+    def test_huge_repo_returns_valid_summary(self, client):
         self._check_valid_summary(client, "https://github.com/git/git")
 
     def test_deprecated_undocumented_repo_returns_valid_summary(self, client):
@@ -52,6 +52,12 @@ class TestSummarizeEndpoint:
         
     def test_super_niche_repo_returns_valid_summary(self, client):
         self._check_valid_summary(client, "https://github.com/setuc/Matching-Algorithms")
+
+    def test_popular_repo_returns_valid_summary(self, client):
+        self._check_valid_summary(client, "https://github.com/psf/requests")
+
+    def test_regular_repo_returns_valid_summary(self, client):
+        self._check_valid_summary(client, "https://github.com/nicklockwood/SwiftFormat")
 
     def test_invalid_url_returns_error(self, client):
         response = client.post(
