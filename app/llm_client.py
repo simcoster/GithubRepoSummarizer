@@ -3,12 +3,10 @@ import logging
 
 from openai import AsyncOpenAI
 
+from app.config import DEFAULT_NEBIUS_API_BASE, DEFAULT_NEBIUS_MODEL
 from app.models import SummarizeResponse
 
 logger = logging.getLogger(__name__)
-
-NEBIUS_API_BASE = "https://api.studio.nebius.com/v1/"
-MODEL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 SYSTEM_PROMPT = """\
 You are a software project analyst. You will receive:
@@ -59,7 +57,12 @@ class LLMError(Exception):
 
 
 class LLMClient:
-    def __init__(self, api_key: str, base_url: str = NEBIUS_API_BASE, model: str = MODEL):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = DEFAULT_NEBIUS_API_BASE,
+        model: str = DEFAULT_NEBIUS_MODEL,
+    ):
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
 
@@ -83,26 +86,18 @@ class LLMClient:
                     max_tokens=800,
                     response_format={"type": "json_object"},
                 )
-                usage = getattr(response, "usage", None)
-                if usage and hasattr(usage, "total_tokens"):
-                    print(f"[LLMClient] Tokens used: {usage.total_tokens}")
-                    print(f"[LLMClient] Prompt tokens: {usage.prompt_tokens}")
-                    print(f"[LLMClient] Completion tokens: {usage.completion_tokens}")
-                    print("--------------------------------")
             except Exception as e:
                 logger.error("LLM API call failed: %s", e)
                 raise LLMError(f"LLM API call failed: {e}") from e
 
             raw = response.choices[0].message.content
-            logger.error(f"model: {self._model}, LLM response: {raw}")
             try:
                 if not raw:
                     raise ValueError("LLM returned an empty response")
                 data = json.loads(raw)
-                print(f"model: {self._model}, response: {data}")
                 return SummarizeResponse(
                     summary=data.get("summary", ""),
-                    technologies=list(set(data.get("technologies", []))),
+                    technologies=data.get("technologies", []),
                     structure=data.get("structure", ""),
                 )
             except Exception as e:

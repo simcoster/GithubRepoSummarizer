@@ -1,10 +1,11 @@
-import re
+import logging
 
 import httpx
 from dataclasses import dataclass
 
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 30.0
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -13,8 +14,6 @@ class RepoFile:
     size: int
     download_url: str | None = None
     content: str | None = None
-    last_commit_timestamp: str | None = None
-    commit_count: int | None = None
 
 
 class GitHubClientError(Exception):
@@ -48,11 +47,25 @@ class GitHubClient:
 
     async def get_repo_tree(
         self, owner: str, repo: str, branch: str
-    ) -> tuple[list[RepoFile], list[dict]]:
+    ) -> list[RepoFile]:
         url = f"{GITHUB_API}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
         resp = await self._client.get(url)
+        if resp.status_code == 404:
+            raise GitHubClientError(
+                f"Repository '{owner}/{repo}' not found. "
+                "Make sure it exists and is public."
+            )
         resp.raise_for_status()
         data = resp.json()
+
+        if data.get("truncated"):
+            logger.warning(
+                "Git tree API response is truncated for %s/%s on branch %s. "
+                "Proceeding with partial tree from recursive endpoint.",
+                owner,
+                repo,
+                branch,
+            )
 
         files: list[RepoFile] = []
         tree = data.get("tree", [])
@@ -70,39 +83,6 @@ class GitHubClient:
                 )
             )
         return files
-
-    async def get_file_commit_info(
-        self, owner: str, repo: str, branch: str, path: str
-    ) -> tuple[str | None, int | None]:
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/commits"
-        params = {"path": path, "sha": branch, "per_page": 1}
-        resp = await self._client.get(url, params=params)
-        if resp.status_code == 403:
-            raise GitHubClientError("GitHub API rate limit exceeded. Try again later.")
-        if resp.status_code != 200:
-            return None, None
-        commits = resp.json()
-        if not commits:
-            return None, 0
-
-        commit = commits[0].get("commit", {})
-        committer = commit.get("committer") or {}
-        author = commit.get("author") or {}
-        timestamp = committer.get("date") or author.get("date")
-        commit_count = self._parse_commit_count(resp.headers.get("Link"), len(commits))
-        return timestamp, commit_count
-
-    @staticmethod
-    def _parse_commit_count(link_header: str | None, fallback: int) -> int:
-        if not link_header:
-            return fallback
-        for part in link_header.split(","):
-            if 'rel="last"' not in part:
-                continue
-            m = re.search(r"page=(\d+)>", part)
-            if m:
-                return int(m.group(1))
-        return fallback
 
     async def fetch_file_content(self, file: RepoFile) -> str | None:
         if not file.download_url:

@@ -109,12 +109,10 @@ def _score_file(file: RepoFile) -> int:
         score = 100
         # Prefer test files among source files
         if "test" in name.lower():
-            score + 50
+            score += 50
 
-    if "README.md" in name and depth == 2:
-        pass
-    # Strongly prefer top-level files; heavily penalize depth 2+
-    score -= depth * 500  # depth 1: 0, depth 2: -500, depth 3: -1000, ...
+    # Strongly prefer top-level files;
+    score -= (depth-1) * 500  # depth 1: 0, depth 2: -500, depth 3: -1000, ...
 
     # Prefer smaller files (they're usually more focused)
     if file.size < 2000:
@@ -127,7 +125,7 @@ def _score_file(file: RepoFile) -> int:
     # Entry-point heuristics
     entry_names = {"main", "app", "index", "server", "cli", "__main__", "mod"}
     stem = PurePosixPath(name).stem.lower()
-    if stem in entry_names:\
+    if stem in entry_names:
         score += 300
 
     return score
@@ -274,9 +272,6 @@ def truncate_content(content: str, max_chars: int = MAX_FILE_CHARS) -> str:
 async def collect_repo_context(
     client: GitHubClient,
     files: list[RepoFile],
-    owner: str,
-    repo: str,
-    branch: str,
 ) -> str:
     """Fetch file contents and assemble the context string for the LLM."""
     prioritized = filter_files(files)
@@ -286,13 +281,10 @@ async def collect_repo_context(
 
     async def _fetch(f: RepoFile):
         async with semaphore:
-            content, commit_info = await asyncio.gather(
-                client.fetch_file_content(f),
-                client.get_file_commit_info(owner, repo, branch, f.path),
-            )
+            logger.debug("Fetching file content: %s", f.path)
+            content = await client.fetch_file_content(f)
             if content is not None:
                 f.content = content
-            f.last_commit_timestamp, f.commit_count = commit_info
 
     await asyncio.gather(*[_fetch(f) for f in to_fetch])
 

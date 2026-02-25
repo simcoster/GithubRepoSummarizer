@@ -16,13 +16,13 @@ A FastAPI service that takes a public GitHub repository URL and returns an LLM-g
 cd NebiusHomeAssigment
 
 # Create a virtual environment
-python -m venv venv
+python -m venv .venv
 
 # Activate it
 # On Linux/macOS:
-source venv/bin/activate
+source .venv/bin/activate
 # On Windows:
-venv\Scripts\activate
+.venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -45,8 +45,8 @@ Optional environment variables:
 | Variable | Default | Description |
 |---|---|---|
 | `NEBIUS_API_KEY` | *(required)* | Your Nebius Token Factory API key |
-| `NEBIUS_API_BASE` | `https://api.studio.nebius.com/v1/` | Base URL for the LLM API |
-| `NEBIUS_MODEL` | `meta-llama/Meta-Llama-3.1-70B-Instruct` | Model to use |
+| `NEBIUS_API_BASE` | `https://api.tokenfactory.nebius.com/v1/` | Base URL for the LLM API |
+| `NEBIUS_MODEL` | `Qwen/Qwen3-235B-A22B-Instruct-2507` | Model to use |
 | `GITHUB_TOKEN` | *(none)* | Optional GitHub token to increase API rate limits |
 
 ### Running the server
@@ -58,16 +58,22 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ### Testing
 
 ```bash
+# Linux/macOS
 curl -X POST http://localhost:8000/summarize \
   -H "Content-Type: application/json" \
   -d '{"github_url": "https://github.com/psf/requests"}'
+
+# Windows PowerShell (use curl.exe, not Invoke-WebRequest aliases)
+curl.exe -X POST http://localhost:8000/summarize `
+  -H "Content-Type: application/json" `
+  -d "{\"github_url\":\"https://github.com/psf/requests\"}"
 ```
 
 ## Design Decisions
 
 ### Model Choice
 
-**Meta-Llama-3.1-70B-Instruct** — A strong open-weight model available on Nebius that reliably follows structured output instructions and has a large enough context window (128K tokens) to handle substantial repository context. It produces high-quality, detailed summaries while being cost-effective.
+**Qwen3-235B-A22B-Instruct-2507** — A strong instruction-following model on Nebius that works well with strict JSON output constraints and produces reliable project-level summaries from mixed repository context.
 
 ### Repository Processing Strategy
 
@@ -88,7 +94,8 @@ The core challenge is fitting the most informative parts of a repository into th
 6. **Other source files** — deeper files fill in details about implementation.
 
 **Context management:**
-- A full directory tree is always included so the LLM understands overall project structure.
+- A directory tree representation is always included: full tree for smaller repositories, summarized top-level breakdown for very large ones.
+- If GitHub marks the recursive tree response as truncated, the service logs a warning and proceeds with the partial tree.
 - Files are scored by a priority function and fetched in priority order.
 - Individual files are truncated at 15K characters if needed.
 - Total context is capped at ~80K characters to stay well within the model's token limit.

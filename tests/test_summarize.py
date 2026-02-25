@@ -1,83 +1,95 @@
-import os
 import pytest
 from fastapi.testclient import TestClient
 
+from app.github_client import RepoFile
 from app.main import app
+from app.models import SummarizeResponse
 
 
 @pytest.fixture()
 def client():
     return TestClient(app)
+def _mock_github_client(monkeypatch: pytest.MonkeyPatch, files_with_content: dict[str, str]):
+    async def fake_get_default_branch(self, owner, repo):
+        return "main"
+
+    async def fake_get_repo_tree(self, owner, repo, branch):
+        return [
+            RepoFile(path=path, size=len(content), download_url=f"https://example.test/{path}")
+            for path, content in files_with_content.items()
+        ]
+
+    async def fake_fetch_file_content(self, file: RepoFile):
+        return files_with_content.get(file.path)
+
+    monkeypatch.setattr("app.main.GitHubClient.get_default_branch", fake_get_default_branch)
+    monkeypatch.setattr("app.main.GitHubClient.get_repo_tree", fake_get_repo_tree)
+    monkeypatch.setattr("app.main.GitHubClient.fetch_file_content", fake_fetch_file_content)
 
 
-def _skip_if_no_api_key():
-    if not os.environ.get("NEBIUS_API_KEY"):
-        pytest.skip("NEBIUS_API_KEY not set — skipping integration test")
+class _FakeLLMClient:
+    def __init__(self, result: SummarizeResponse, capture: dict[str, str]):
+        self._result = result
+        self._capture = capture
+
+    async def summarize(self, owner: str, repo: str, context: str) -> SummarizeResponse:
+        self._capture["owner"] = owner
+        self._capture["repo"] = repo
+        self._capture["context"] = context
+        return self._result
 
 
-class TestSummarizeEndpoint:
-    """Integration tests that hit the real GitHub + LLM APIs."""
+class TestSummarizeDeterministic:
+    def test_returns_expected_summary_and_context_contains_evidence(self, client, monkeypatch):
+        files = {
+            "README.md": "# Requests\nPython HTTP library for humans.",
+            "requests/api.py": "import http.client\n\ndef get(url):\n    return url\n",
+            "tests/test_api.py": "def test_get():\n    assert True\n",
+            "pyproject.toml": "[project]\nname='requests'\n",
+        }
+        _mock_github_client(monkeypatch, files)
 
-    def _check_valid_summary(self, client, github_url):
-        _skip_if_no_api_key()
-        response = client.post(
-            "/summarize",
-            json={"github_url": github_url},
+        expected = SummarizeResponse(
+            summary="Requests is a Python HTTP client library focused on simple, human-friendly API usage.",
+            technologies=["Python", "HTTP"],
+            structure="Core request logic lives in the requests package while tests cover behavior from a separate tests directory.",
         )
+        capture: dict[str, str] = {}
+        monkeypatch.setattr("app.main._get_llm_client", lambda: _FakeLLMClient(expected, capture))
 
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.json()}"
-        data = response.json()
+        response = client.post("/summarize", json={"github_url": "https://github.com/psf/requests"})
 
-        assert "summary" in data
-        assert "technologies" in data
-        assert "structure" in data
+        assert response.status_code == 200
+        assert response.json() == expected.model_dump()
 
-        assert isinstance(data["summary"], str)
-        assert len(data["summary"]) > 10
-        print(f"summary: {data['summary']}")
+        # Validate that pipeline context includes concrete repository evidence.
+        assert capture["owner"] == "psf"
+        assert capture["repo"] == "requests"
+        assert "## Directory Structure" in capture["context"]
+        assert "README.md" in capture["context"]
+        assert "requests/api.py" in capture["context"]
+        assert "tests/test_api.py" in capture["context"]
 
-        assert isinstance(data["technologies"], list)
-        assert len(data["technologies"]) > 0
-        print(f"technologies: {data['technologies']}")
+    def test_empty_repo_returns_400(self, client, monkeypatch):
+        async def fake_get_default_branch(self, owner, repo):
+            return "main"
 
-        assert isinstance(data["structure"], str)
-        assert len(data["structure"]) > 10
-        print(f"structure: {data['structure']}")
+        async def fake_get_repo_tree(self, owner, repo, branch):
+            return []
 
-    def test_huge_repo_returns_valid_summary(self, client):
-        self._check_valid_summary(client, "https://github.com/git/git")
+        monkeypatch.setattr("app.main.GitHubClient.get_default_branch", fake_get_default_branch)
+        monkeypatch.setattr("app.main.GitHubClient.get_repo_tree", fake_get_repo_tree)
 
-    def test_deprecated_undocumented_repo_returns_valid_summary(self, client):
-        self._check_valid_summary(client, "https://github.com/hasadna/Open-Knesset")
-        
-    def test_super_niche_repo_returns_valid_summary(self, client):
-        self._check_valid_summary(client, "https://github.com/setuc/Matching-Algorithms")
+        response = client.post("/summarize", json={"github_url": "https://github.com/acme/empty-repo"})
 
-    def test_popular_repo_returns_valid_summary(self, client):
-        self._check_valid_summary(client, "https://github.com/psf/requests")
-
-    def test_regular_repo_returns_valid_summary(self, client):
-        self._check_valid_summary(client, "https://github.com/nicklockwood/SwiftFormat")
-
-    def test_invalid_url_returns_error(self, client):
-        response = client.post(
-            "/summarize",
-            json={"github_url": "not-a-github-url"},
-        )
-        assert response.status_code == 422
-
-    def test_nonexistent_repo_returns_404(self, client):
-        _skip_if_no_api_key()
-
-        response = client.post(
-            "/summarize",
-            json={
-                "github_url": "https://github.com/thisownerdoesnotexist123456/norepo"
-            },
-        )
-        assert response.status_code == 404
+        assert response.status_code == 400
         data = response.json()
         assert data["status"] == "error"
+        assert data["message"] == "Repository appears to be empty."
+
+    def test_invalid_url_returns_422(self, client):
+        response = client.post("/summarize", json={"github_url": "not-a-github-url"})
+        assert response.status_code == 422
 
     def test_missing_github_url_returns_422(self, client):
         response = client.post("/summarize", json={})
