@@ -40,7 +40,6 @@ SKIP_FILENAMES = {
 }
 
 HIGH_PRIORITY_FILENAMES = {
-    "README.md", "README.rst", "README.txt", "README",
     "package.json", "pyproject.toml", "setup.py", "setup.cfg",
     "Cargo.toml", "go.mod", "Gemfile", "build.gradle", "pom.xml",
     "composer.json", "mix.exs", "Makefile", "CMakeLists.txt",
@@ -98,7 +97,7 @@ def _score_file(file: RepoFile) -> int:
     score = 0
 
     if name.upper().startswith("README"):
-        score = 1000
+        score = 2000
     elif name in HIGH_PRIORITY_FILENAMES:
         score = 800
     elif name in MEDIUM_PRIORITY_FILENAMES or file.path in MEDIUM_PRIORITY_FILENAMES:
